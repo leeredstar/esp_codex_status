@@ -1,11 +1,11 @@
-﻿/*
- * Task LED v1 - With Factory Reset Button
+/*
+ * Task LED v1 - Codex Vibe Lamp
  * 
- * New features:
- *   - Long press FLASH button (GPIO0) for 3 seconds = factory reset
- *   - LED feedback during reset (red flash)
- *   - OLED shows reset countdown
- *   - /reset endpoint in AP portal for web-based reset
+ * Features:
+ *   - WiFi Captive Portal provisioning
+ *   - Cloud server polling (Serv00)
+ *   - LED strip control (4 colors + standby)
+ *   - Factory reset via FLASH button (3s hold)
  */
 
 #include <ESP8266WiFi.h>
@@ -15,16 +15,11 @@
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 #include <EEPROM.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <DNSServer.h>
 
 #define LED_PIN   2
 #define LED_COUNT 30
 #define BRIGHTNESS 80
-#define SDA_PIN   12
-#define SCL_PIN   14
 #define BTN_PIN   0    // FLASH button on GPIO0 (D3)
 #define RESET_HOLD_MS 3000  // Hold 3 seconds to reset
 
@@ -45,8 +40,6 @@ const char* PATH = "/get_status";
 #define PASS_ADDR   34
 #define MAGIC_ADDR  98
 
-Adafruit_SSD1306 oled(128, 64, &Wire, -1);
-bool hasDisplay = false;
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 WiFiClient http_client;
 ESP8266WebServer server(80);
@@ -59,7 +52,6 @@ String ip = "...";
 bool ledsOn = false;
 bool inStandby = false;
 unsigned long lastPoll = 0;
-unsigned long lastDraw = 0;
 
 // Button state
 unsigned long btnPressStart = 0;
@@ -127,122 +119,6 @@ void clearCredentials() {
   Serial.println("[EEPROM] Cleared (magic invalidated)");
 }
 
-// ===================== Display =====================
-void initDisplay() {
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(100000);
-  hasDisplay = oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  if (!hasDisplay) hasDisplay = oled.begin(SSD1306_SWITCHCAPVCC, 0x3D);
-  if (hasDisplay) {
-    oled.ssd1306_command(SSD1306_SETCONTRAST);
-    oled.ssd1306_command(0xFF);
-    oled.clearDisplay();
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setCursor(0, 0);
-    oled.println("Task LED v1");
-    oled.println("Booting...");
-    oled.display();
-    Serial.println("[OLED] Display OK");
-  } else {
-    Serial.println("[OLED] Display NOT found");
-  }
-}
-
-void drawScreen() {
-  if (!hasDisplay) return;
-  oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setCursor(0, 0);
-  oled.print("IP: ");
-  oled.println(ip);
-  oled.setCursor(0, 12);
-  oled.print("Mode: ");
-  oled.println(mode);
-  oled.setCursor(0, 28);
-  oled.setTextSize(2);
-  oled.println(mode);
-  oled.setTextSize(1);
-  oled.setCursor(0, 52);
-  oled.print(ledsOn ? "LED: ON" : "LED: OFF");
-  if (ledsOn) {
-    oled.print(" ");
-    oled.print(curR); oled.print(",");
-    oled.print(curG); oled.print(",");
-    oled.print(curB);
-  }
-  oled.display();
-}
-
-void drawAPScreen() {
-  if (!hasDisplay) return;
-  oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setCursor(0, 0);
-  oled.println("WiFi Setup Mode");
-  oled.println();
-  oled.println("Connect to WiFi:");
-  oled.setTextSize(2);
-  oled.setCursor(0, 24);
-  oled.println("Task-LED");
-  oled.println("Setup");
-  oled.setTextSize(1);
-  oled.setCursor(0, 54);
-  oled.println("Then open any webpage");
-  oled.display();
-}
-
-void drawConnectingScreen(String ssid) {
-  if (!hasDisplay) return;
-  oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setCursor(0, 0);
-  oled.println("Connecting...");
-  oled.println();
-  oled.print("SSID: ");
-  oled.println(ssid);
-  oled.println();
-  oled.println("Please wait...");
-  oled.display();
-}
-
-void drawResetScreen(int secondsLeft) {
-  if (!hasDisplay) return;
-  oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setCursor(0, 0);
-  oled.println("!!! FACTORY RESET !!!");
-  oled.println();
-  oled.print("Hold button for ");
-  oled.print(secondsLeft);
-  oled.println("s");
-  oled.println();
-  oled.println("Release to cancel");
-  oled.setTextSize(2);
-  oled.setCursor(0, 40);
-  oled.print("  ");
-  oled.print(secondsLeft);
-  oled.println("s");
-  oled.display();
-}
-
-void drawResetDone() {
-  if (!hasDisplay) return;
-  oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setCursor(0, 0);
-  oled.println("WiFi Cleared!");
-  oled.println();
-  oled.println("Restarting into");
-  oled.println("setup mode...");
-  oled.display();
-}
-
 // ===================== LEDs =====================
 void ledsOnColor(int r, int g, int b) {
   curR=r; curG=g; curB=b; ledsOn=true; inStandby=false;
@@ -257,19 +133,19 @@ void ledsOff() {
   strip.show();
 }
 
-void blinkMulti(int r, int g, int b, int onMs, int offMs, int count) {
-  for (int i=0; i<count; i++) {
-    ledsOnColor(r,g,b); delay(onMs);
-    ledsOff(); delay(offMs);
-  }
-}
-
 void ledsDimWhite() {
   // Dim white standby light
   for (int i=0; i<LED_COUNT; i++) strip.setPixelColor(i, strip.Color(20, 20, 20));
   strip.show();
   ledsOn = false;
   inStandby = true;
+}
+
+void blinkMulti(int r, int g, int b, int onMs, int offMs, int count) {
+  for (int i=0; i<count; i++) {
+    ledsOnColor(r,g,b); delay(onMs);
+    ledsOff(); delay(offMs);
+  }
 }
 
 void blink(int r, int g, int b, int ms) {
@@ -318,7 +194,6 @@ void doFactoryReset() {
     delay(100);
   }
   
-  drawResetDone();
   clearCredentials();
   
   // Also clear cloud status to idle
@@ -339,20 +214,15 @@ void checkResetButton() {
   bool pressed = (digitalRead(BTN_PIN) == LOW); // Active LOW
   
   if (pressed && !btnWasPressed) {
-    // Button just pressed
     btnPressStart = millis();
     btnWasPressed = true;
   }
   
   if (pressed && btnWasPressed) {
     unsigned long heldMs = millis() - btnPressStart;
-    int remaining = (RESET_HOLD_MS - heldMs) / 1000 + 1;
-    if (remaining < 1) remaining = 1;
     
-    // Show countdown on screen after 1 second of holding
+    // Blink orange during countdown after 1 second
     if (heldMs > 1000) {
-      drawResetScreen(remaining);
-      // Blink orange during countdown
       if ((heldMs / 200) % 2 == 0) {
         ledsOnColor(255, 128, 0);
       } else {
@@ -368,9 +238,8 @@ void checkResetButton() {
   }
   
   if (!pressed && btnWasPressed) {
-    // Button released (before reset threshold)
     btnWasPressed = false;
-    ledsOff(); // Turn off countdown LED
+    ledsOff();
     Serial.printf("[BTN] Released after %lu ms (need %d ms to reset)\n", 
       millis() - btnPressStart, RESET_HOLD_MS);
   }
@@ -515,7 +384,6 @@ void handleSave() {
   delay(3000);
   
   Serial.println("[Save] Testing connection...");
-  drawConnectingScreen(ssid);
   
   // Full WiFi reset before connecting
   WiFi.softAPdisconnect(true);  // Turn off AP
@@ -569,8 +437,6 @@ void startPortal() {
   IPAddress apIP = WiFi.softAPIP();
   Serial.printf("[AP] Started: Task-LED-Setup @ %s\n", apIP.toString().c_str());
   
-  drawAPScreen();
-  
   dnsServer.start(DNS_PORT, "*", apIP);
   Serial.println("[DNS] Captive portal active");
   
@@ -594,7 +460,7 @@ void startPortal() {
   while (true) {
     dnsServer.processNextRequest();
     server.handleClient();
-    checkResetButton(); // Allow hardware reset in AP mode too
+    checkResetButton();
     yield();
   }
 }
@@ -602,7 +468,6 @@ void startPortal() {
 // ===================== Connect =====================
 bool tryConnect(String ssid, String pass, int timeoutSec) {
   Serial.printf("[WiFi] Connecting to '%s' (pass len=%d)\n", ssid.c_str(), pass.length());
-  drawConnectingScreen(ssid);
   
   // Full WiFi reset
   WiFi.softAPdisconnect(true);
@@ -636,18 +501,16 @@ bool tryConnect(String ssid, String pass, int timeoutSec) {
 // ===================== Setup =====================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n================================");
-  Serial.println("=== Task LED v1 (WiFi Fix) ===");
-  Serial.println("================================");
+  Serial.println("\n========================");
+  Serial.println("=== Task LED v1 ===");
+  Serial.println("========================");
   
-  // Init button pin (internal pull-up, active LOW)
   pinMode(BTN_PIN, INPUT_PULLUP);
-  Serial.println("[BTN] Flash button ready (GPIO0, hold 3s to reset)");
+  Serial.println("[BTN] Flash button ready (hold 3s to reset)");
   
   strip.begin();
   strip.setBrightness(BRIGHTNESS);
   ledsOff();
-  initDisplay();
   
   String ssid, pass;
   bool hasCreds = loadCredentials(ssid, pass);
@@ -655,21 +518,6 @@ void setup() {
   if (hasCreds) {
     Serial.printf("[Boot] Found saved WiFi: '%s'\n", ssid.c_str());
     if (tryConnect(ssid, pass, 20)) {
-      if (hasDisplay) {
-        oled.clearDisplay();
-        oled.setCursor(0, 0);
-        oled.setTextSize(1);
-        oled.setTextColor(SSD1306_WHITE);
-        oled.println("WiFi Connected!");
-        oled.println();
-        oled.print("IP: ");
-        oled.println(ip);
-        oled.println();
-        oled.println("Ready!");
-        oled.println();
-        oled.println("Hold FLASH 3s = Reset");
-        oled.display();
-      }
       blink(0, 80, 0, 500);
       delay(500);
       ledsDimWhite(); // Show white standby light
@@ -690,17 +538,13 @@ void setup() {
 void loop() {
   unsigned long now = millis();
   
-  // Check reset button every loop
   checkResetButton();
   
   if (now - lastPoll >= 2000) {
     lastPoll = now;
     pollCloud();
   }
-  if (now - lastDraw >= 500) {
-    lastDraw = now;
-    drawScreen();
-  }
+  
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] Lost! Restarting...");
     delay(1000);
@@ -708,8 +552,3 @@ void loop() {
   }
   yield();
 }
-
-
-
-
-
